@@ -1,0 +1,1457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ChainLink AI Studio by ElevateTempus.com</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@0.263.1/dist/umd/lucide.js"></script>
+</head>
+<body>
+    <div id="root"></div>
+    <script type="text/babel">
+        const { useState, useCallback, useRef, useEffect } = React;
+        const { Plus, Play, Save, Trash2, MessageSquare, Code, GitBranch, RotateCcw, Merge, Globe, X, HelpCircle, Link, Send, Download, Upload } = lucide;
+
+        // Icon Component wrapper
+        const Icon = ({ icon: IconComponent, size = 16, className = "" }) => {
+            const ref = useRef(null);
+            
+            useEffect(() => {
+                if (ref.current && IconComponent) {
+                    const icon = new IconComponent();
+                    icon.class = className;
+                    icon.size = size;
+                    ref.current.innerHTML = '';
+                    ref.current.appendChild(icon.node);
+                }
+            }, [IconComponent, size, className]);
+            
+            return <span ref={ref}></span>;
+        };
+
+        const nodeTypes = [
+          { type: 'flowise_chat', name: 'Flowise Chat', icon: MessageSquare, color: 'bg-purple-500' },
+          { type: 'openai_chat', name: 'OpenAI Chat', icon: MessageSquare, color: 'bg-green-500' },
+          { type: 'claude_chat', name: 'Claude Chat', icon: MessageSquare, color: 'bg-orange-500' },
+          { type: 'api_call', name: 'API Call', icon: Globe, color: 'bg-blue-500' },
+          { type: 'transform', name: 'Transform', icon: Code, color: 'bg-gray-500' },
+          { type: 'condition', name: 'Condition', icon: GitBranch, color: 'bg-yellow-500' },
+          { type: 'loop', name: 'Loop', icon: RotateCcw, color: 'bg-red-500' },
+          { type: 'merge', name: 'Merge', icon: Merge, color: 'bg-indigo-500' }
+        ];
+
+        // Connection Line Component
+        const ConnectionLine = ({ fromNode, toNode }) => {
+          if (!fromNode || !toNode) return null;
+          
+          const x1 = fromNode.x + 192;
+          const y1 = fromNode.y + 40;
+          const x2 = toNode.x;
+          const y2 = toNode.y + 40;
+          
+          const midX = (x1 + x2) / 2;
+          const path = `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`;
+          
+          return (
+            <svg className="absolute top-0 left-0 w-full h-full pointer-events-none" style={{ zIndex: 0 }}>
+              <path
+                d={path}
+                fill="none"
+                stroke="#3b82f6"
+                strokeWidth="2"
+              />
+              <circle cx={x1} cy={y1} r="3" fill="#3b82f6" />
+              <circle cx={x2} cy={y2} r="3" fill="#3b82f6" />
+            </svg>
+          );
+        };
+
+        // Dragging Connection Line
+        const DraggingLine = ({ fromNode, mousePos }) => {
+          if (!fromNode || !mousePos) return null;
+          
+          const x1 = fromNode.x + 192;
+          const y1 = fromNode.y + 40;
+          const x2 = mousePos.x;
+          const y2 = mousePos.y;
+          
+          const midX = (x1 + x2) / 2;
+          const path = `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`;
+          
+          return (
+            <svg className="absolute top-0 left-0 w-full h-full pointer-events-none" style={{ zIndex: 20 }}>
+              <path
+                d={path}
+                fill="none"
+                stroke="#3b82f6"
+                strokeWidth="2"
+                strokeDasharray="5,5"
+                opacity="0.6"
+              />
+              <circle cx={x1} cy={y1} r="3" fill="#3b82f6" />
+            </svg>
+          );
+        };
+
+        // Chat Interface Component
+        const ChatInterface = ({ workflow, nodes, connections, onClose }) => {
+          const [messages, setMessages] = useState([]);
+          const [input, setInput] = useState('');
+          const [isProcessing, setIsProcessing] = useState(false);
+          
+          // Find the first AI chat node in the workflow
+          const getFirstChatNode = () => {
+            const chatNodes = nodes.filter(n => ['flowise_chat', 'openai_chat', 'claude_chat'].includes(n.type));
+            if (chatNodes.length === 0) return null;
+            
+            // Find a chat node with no incoming connections (start of workflow)
+            const startNode = chatNodes.find(node => !connections.some(c => c.to === node.id));
+            return startNode || chatNodes[0];
+          };
+          
+          const processMessage = async () => {
+            if (!input.trim()) return;
+            
+            const firstNode = getFirstChatNode();
+            if (!firstNode) {
+              setMessages([...messages, 
+                { role: 'user', content: input },
+                { role: 'assistant', content: '❌ No AI chat nodes found in the workflow. Please add at least one chat node.' }
+              ]);
+              setInput('');
+              return;
+            }
+            
+            setIsProcessing(true);
+            const userMessage = input;
+            setInput('');
+            setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
+            
+            // Build the workflow execution chain
+            const workflowPrompt = buildWorkflowPrompt(userMessage, firstNode);
+            
+            setMessages(prev => [...prev, { 
+              role: 'assistant', 
+              content: `🤖 Processing through ${firstNode.config.name || firstNode.type}...\n\n${workflowPrompt}` 
+            }]);
+            
+            setIsProcessing(false);
+          };
+          
+          const buildWorkflowPrompt = (userInput, startNode) => {
+            // Build a comprehensive prompt that includes the workflow structure
+            let prompt = `📋 Workflow Execution Plan:\n\n`;
+            prompt += `1️⃣ **${startNode.config.name || startNode.type}**\n`;
+            prompt += `   Input: "${userInput}"\n`;
+            
+            // Get connected nodes
+            const getConnectedNodes = (nodeId) => {
+              return connections
+                .filter(c => c.from === nodeId)
+                .map(c => nodes.find(n => n.id === c.to))
+                .filter(Boolean);
+            };
+            
+            const connectedNodes = getConnectedNodes(startNode.id);
+            if (connectedNodes.length > 0) {
+              prompt += `   Connected to: ${connectedNodes.map(n => n.config.name || n.type).join(', ')}\n`;
+            }
+            
+            prompt += `\n📌 To execute this workflow:\n`;
+            prompt += `1. Copy the workflow JSON (Save & Download)\n`;
+            prompt += `2. Set up a local web server\n`;
+            prompt += `3. Add your API keys\n`;
+            prompt += `4. The workflow will process: "${userInput}" through all connected nodes\n`;
+            
+            // Add the cURL command for the first node
+            const apiConfig = getNodeApiConfig(startNode, userInput);
+            prompt += `\n🔧 First node API call:\n\`\`\`bash\n${apiConfig}\n\`\`\``;
+            
+            return prompt;
+          };
+          
+          const getNodeApiConfig = (node, input) => {
+            const configs = {
+              flowise_chat: {
+                method: 'POST',
+                url: node.config.flowiseUrl || 'https://your-flowise.onrender.com/api/v1/prediction/your-id',
+                headers: {
+                  'Content-Type': 'application/json',
+                  ...(node.config.apiKey && { 'Authorization': `Bearer ${node.config.apiKey}` })
+                },
+                body: { question: input }
+              },
+              openai_chat: {
+                method: 'POST',
+                url: 'https://api.openai.com/v1/chat/completions',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${node.config.apiKey || 'YOUR_API_KEY'}`
+                },
+                body: {
+                  model: node.config.model || 'gpt-4o',
+                  messages: [{ role: 'user', content: input }],
+                  max_tokens: parseInt(node.config.maxTokens) || 1000
+                }
+              },
+              claude_chat: {
+                method: 'POST',
+                url: 'https://api.anthropic.com/v1/messages',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'x-api-key': node.config.apiKey || 'YOUR_API_KEY',
+                  'anthropic-version': '2023-06-01'
+                },
+                body: {
+                  model: node.config.model || 'claude-3-5-sonnet-20241022',
+                  max_tokens: parseInt(node.config.maxTokens) || 1000,
+                  messages: [{ role: 'user', content: input }]
+                }
+              }
+            };
+            
+            const config = configs[node.type];
+            if (!config) return 'No API configuration available';
+            
+            return `curl -X ${config.method} "${config.url}" \\
+${Object.entries(config.headers).map(([k, v]) => `  -H "${k}: ${v}"`).join(' \\\n')} \\
+  -d '${JSON.stringify(config.body, null, 2)}'`;
+          };
+          
+          return (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+              <div className="bg-white rounded-lg w-full max-w-2xl h-[600px] flex flex-col">
+                <div className="p-4 border-b flex items-center justify-between">
+                  <h2 className="text-lg font-semibold">Chat with Workflow: {workflow.name}</h2>
+                  <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+                    <Icon icon={X} size={20} />
+                  </button>
+                </div>
+                
+                <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                  {messages.length === 0 && (
+                    <div className="text-center text-gray-500 mt-8">
+                      <Icon icon={MessageSquare} size={48} className="mx-auto mb-4 opacity-30" />
+                      <p>Start a conversation with your workflow</p>
+                      <p className="text-sm mt-2">Your message will be processed through the connected AI nodes</p>
+                    </div>
+                  )}
+                  
+                  {messages.map((msg, idx) => (
+                    <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                      <div className={`max-w-[80%] rounded-lg p-3 ${
+                        msg.role === 'user' 
+                          ? 'bg-blue-500 text-white' 
+                          : 'bg-gray-100 text-gray-800'
+                      }`}>
+                        <pre className="whitespace-pre-wrap font-sans text-sm">{msg.content}</pre>
+                      </div>
+                    </div>
+                  ))}
+                  
+                  {isProcessing && (
+                    <div className="flex justify-start">
+                      <div className="bg-gray-100 rounded-lg p-3">
+                        <div className="flex items-center gap-2">
+                          <div className="animate-pulse">⏳</div>
+                          <span className="text-sm">Processing workflow...</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                
+                <div className="p-4 border-t">
+                  <form onSubmit={(e) => { e.preventDefault(); processMessage(); }} className="flex gap-2">
+                    <input
+                      type="text"
+                      value={input}
+                      onChange={(e) => setInput(e.target.value)}
+                      placeholder="Type your message..."
+                      className="flex-1 p-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      disabled={isProcessing}
+                    />
+                    <button
+                      type="submit"
+                      disabled={isProcessing || !input.trim()}
+                      className="bg-blue-500 text-white p-2 rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <Icon icon={Send} size={20} />
+                    </button>
+                  </form>
+                  <p className="text-xs text-gray-500 mt-2">
+                    Note: In sandbox mode, API calls show as cURL commands. Deploy locally for real execution.
+                  </p>
+                </div>
+              </div>
+            </div>
+          );
+        };
+
+        const WorkflowNode = ({ node, onDelete, onEdit, onConnectStart, onConnectEnd, isSelected, onSelect, onDrag, onToggleMultinode }) => {
+          const nodeType = nodeTypes.find(t => t.type === node.type);
+          const IconComponent = nodeType?.icon || MessageSquare;
+          const [isDragging, setIsDragging] = useState(false);
+          const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+          const isChat = ['flowise_chat', 'openai_chat', 'claude_chat'].includes(node.type);
+          
+          const handleMouseDown = (e) => {
+            setIsDragging(true);
+            setDragStart({
+              x: e.clientX - node.x,
+              y: e.clientY - node.y
+            });
+            onSelect(node.id);
+          };
+          
+          const handleMouseMove = (e) => {
+            if (isDragging) {
+              onDrag(node.id, {
+                x: e.clientX - dragStart.x,
+                y: e.clientY - dragStart.y
+              });
+            }
+          };
+          
+          const handleMouseUp = () => {
+            setIsDragging(false);
+          };
+          
+          useEffect(() => {
+            if (isDragging) {
+              document.addEventListener('mousemove', handleMouseMove);
+              document.addEventListener('mouseup', handleMouseUp);
+              return () => {
+                document.removeEventListener('mousemove', handleMouseMove);
+                document.removeEventListener('mouseup', handleMouseUp);
+              };
+            }
+          }, [isDragging, dragStart]);
+          
+          return (
+            <div 
+              className={`absolute bg-white rounded-lg shadow-lg border-2 p-4 min-w-[200px] cursor-move transition-shadow ${
+                isSelected ? 'border-blue-500 shadow-xl z-10' : 'border-gray-200 hover:border-gray-300'
+              }`}
+              style={{ left: node.x, top: node.y, zIndex: isSelected ? 10 : 1 }}
+              onMouseDown={handleMouseDown}
+            >
+              <div className="flex items-center gap-2 mb-2">
+                <div className={`p-2 rounded ${nodeType?.color} text-white`}>
+                  <Icon icon={IconComponent} size={16} />
+                </div>
+                <h3 className="font-semibold text-sm">{nodeType?.name}</h3>
+                <button
+                  onClick={(e) => { e.stopPropagation(); onDelete(node.id); }}
+                  className="ml-auto text-gray-400 hover:text-red-500"
+                >
+                  <Icon icon={Trash2} size={14} />
+                </button>
+              </div>
+              
+              <div className="text-xs text-gray-600 mb-2">
+                {node.config?.name || `Node ${node.id}`}
+              </div>
+              
+              <div className="flex gap-1 flex-wrap">
+                <button 
+                  onClick={(e) => { e.stopPropagation(); onEdit(node); }}
+                  className="text-xs bg-gray-100 hover:bg-gray-200 px-2 py-1 rounded"
+                >
+                  Edit
+                </button>
+                {isChat && (
+                  <button 
+                    onClick={(e) => { e.stopPropagation(); onToggleMultinode(node.id); }}
+                    className={`text-xs px-2 py-1 rounded flex items-center gap-1 ${
+                      node.multinode ? 'bg-blue-500 text-white hover:bg-blue-600' : 'bg-blue-100 hover:bg-blue-200'
+                    }`}
+                  >
+                    <Icon icon={Link} size={10} />
+                    Multinode
+                  </button>
+                )}
+              </div>
+              
+              {/* Connection dots */}
+              <div 
+                className="absolute -right-2 top-1/2 w-4 h-4 bg-blue-500 rounded-full border-2 border-white transform -translate-y-1/2 cursor-pointer hover:scale-125 transition-transform"
+                onMouseDown={(e) => { e.stopPropagation(); onConnectStart(node.id, 'output'); }}
+                title="Output - drag to connect"
+              ></div>
+              <div 
+                className="absolute -left-2 top-1/2 w-4 h-4 bg-gray-400 rounded-full border-2 border-white transform -translate-y-1/2 cursor-pointer hover:scale-125 transition-transform"
+                onMouseUp={(e) => { e.stopPropagation(); onConnectEnd(node.id, 'input'); }}
+                onMouseEnter={(e) => { e.stopPropagation(); onConnectEnd(node.id, 'input', true); }}
+                onMouseLeave={(e) => { e.stopPropagation(); onConnectEnd(node.id, 'input', false); }}
+                title="Input"
+              ></div>
+            </div>
+          );
+        };
+
+        const NodeEditor = ({ node, onSave, onClose }) => {
+          const [config, setConfig] = useState(node?.config || {});
+          
+          const getConfigFields = (type) => {
+            switch(type) {
+              case 'flowise_chat':
+                return [
+                  { key: 'name', label: 'Name', type: 'text' },
+                  { key: 'flowiseUrl', label: 'Flowise API URL', type: 'text', placeholder: 'https://your-flowise.onrender.com/api/v1/prediction/your-id' },
+                  { key: 'question', label: 'System Prompt (optional)', type: 'textarea', placeholder: 'System instructions for this node' },
+                  { key: 'streaming', label: 'Streaming', type: 'select', options: ['false', 'true'] },
+                  { key: 'sessionId', label: 'Session ID (optional)', type: 'text', placeholder: 'user-session-123' },
+                  { key: 'apiKey', label: 'API Key (if required)', type: 'text', placeholder: 'your-api-key' }
+                ];
+              case 'openai_chat':
+                return [
+                  { key: 'name', label: 'Name', type: 'text' },
+                  { key: 'apiKey', label: 'OpenAI API Key', type: 'text', placeholder: 'sk-...' },
+                  { key: 'model', label: 'Model', type: 'select', options: ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'o1-preview', 'o1-mini', 'custom'] },
+                  { key: 'customModel', label: 'Custom Model Name', type: 'text', placeholder: 'Enter model name...', showIf: 'model:custom' },
+                  { key: 'systemPrompt', label: 'System Prompt', type: 'textarea', placeholder: 'System instructions for this node' },
+                  { key: 'temperature', label: 'Temperature', type: 'text', placeholder: '0.7' },
+                  { key: 'maxTokens', label: 'Max Tokens', type: 'text', placeholder: '1000' }
+                ];
+              case 'claude_chat':
+                return [
+                  { key: 'name', label: 'Name', type: 'text' },
+                  { key: 'apiKey', label: 'Anthropic API Key', type: 'text', placeholder: 'sk-ant-...' },
+                  { key: 'model', label: 'Model', type: 'select', options: ['claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229', 'custom'] },
+                  { key: 'customModel', label: 'Custom Model Name', type: 'text', placeholder: 'Enter model name...', showIf: 'model:custom' },
+                  { key: 'systemPrompt', label: 'System Prompt', type: 'textarea', placeholder: 'System instructions for this node' },
+                  { key: 'maxTokens', label: 'Max Tokens', type: 'text', placeholder: '1000' }
+                ];
+              case 'api_call':
+                return [
+                  { key: 'name', label: 'Name', type: 'text' },
+                  { key: 'url', label: 'URL', type: 'text' },
+                  { key: 'method', label: 'Method', type: 'select', options: ['GET', 'POST', 'PUT', 'DELETE'] },
+                  { key: 'headers', label: 'Headers (JSON)', type: 'textarea' },
+                  { key: 'body', label: 'Body', type: 'textarea' }
+                ];
+              case 'transform':
+                return [
+                  { key: 'name', label: 'Name', type: 'text' },
+                  { key: 'code', label: 'JavaScript Code', type: 'textarea', placeholder: '// data is available as input\nreturn data.toUpperCase();' }
+                ];
+              case 'condition':
+                return [
+                  { key: 'name', label: 'Name', type: 'text' },
+                  { key: 'condition', label: 'Condition (JS)', type: 'textarea', placeholder: '// return true or false\nreturn data.value > 10;' }
+                ];
+              case 'loop':
+                return [
+                  { key: 'name', label: 'Name', type: 'text' },
+                  { key: 'array', label: 'Array Path', type: 'text', placeholder: 'data.items' }
+                ];
+              case 'merge':
+                return [
+                  { key: 'name', label: 'Name', type: 'text' },
+                  { key: 'strategy', label: 'Merge Strategy', type: 'select', options: ['concat', 'merge', 'replace'] }
+                ];
+              default:
+                return [{ key: 'name', label: 'Name', type: 'text' }];
+            }
+          };
+
+          const fields = getConfigFields(node?.type);
+
+          return (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+              <div className="bg-white rounded-lg p-6 w-96 max-h-[80vh] overflow-y-auto">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-lg font-semibold">Edit Node</h2>
+                  <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+                    <Icon icon={X} size={20} />
+                  </button>
+                </div>
+                
+                {fields.map(field => {
+                  if (field.showIf) {
+                    const [dependField, dependValue] = field.showIf.split(':');
+                    if (config[dependField] !== dependValue) {
+                      return null;
+                    }
+                  }
+                  
+                  return (
+                    <div key={field.key} className="mb-4">
+                      <label className="block text-sm font-medium mb-1">{field.label}</label>
+                      {field.type === 'select' ? (
+                        <select
+                          value={config[field.key] || ''}
+                          onChange={(e) => setConfig({...config, [field.key]: e.target.value})}
+                          className="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                          <option value="">Select...</option>
+                          {field.options?.map(opt => (
+                            <option key={opt} value={opt}>{opt}</option>
+                          ))}
+                        </select>
+                      ) : field.type === 'textarea' ? (
+                        <textarea
+                          value={config[field.key] || ''}
+                          onChange={(e) => setConfig({...config, [field.key]: e.target.value})}
+                          className="w-full p-2 border rounded h-20 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          placeholder={field.placeholder || ''}
+                        />
+                      ) : (
+                        <input
+                          type="text"
+                          value={config[field.key] || ''}
+                          onChange={(e) => setConfig({...config, [field.key]: e.target.value})}
+                          className="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          placeholder={field.placeholder || ''}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+                
+                <div className="flex gap-2 mt-6">
+                  <button
+                    onClick={() => onSave({...node, config})}
+                    className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 flex-1"
+                  >
+                    Save
+                  </button>
+                  <button
+                    onClick={onClose}
+                    className="bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300 flex-1"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        };
+
+        // Learn Modal Component
+        const LearnModal = ({ isOpen, onClose }) => {
+          if (!isOpen) return null;
+          
+          const features = [
+            {
+              title: "AI Chat Nodes",
+              icon: MessageSquare,
+              color: "text-purple-600",
+              description: "Connect to various AI services including Flowise, OpenAI, and Claude. Each chat node can process prompts and return AI-generated responses.",
+              example: "Use a Flowise Chat node to connect to your custom chatbot, or use OpenAI/Claude nodes for direct API access. System prompts in each node act as instructions when processing chat workflows."
+            },
+            {
+              title: "Chat Interface",
+              icon: Send,
+              color: "text-blue-600",
+              description: "Chat directly with your workflow! Click the Chat button to send messages through your AI pipeline without manual execution.",
+              example: "Your message enters the first AI node as user input, while system prompts in subsequent nodes guide the processing. Perfect for creating conversational AI chains."
+            },
+            {
+              title: "API Call Node",
+              icon: Globe,
+              color: "text-blue-600",
+              description: "Make HTTP requests to any REST API. Supports GET, POST, PUT, and DELETE methods with custom headers and body content.",
+              example: "Fetch weather data from an API, send data to a webhook, or integrate with third-party services. Chain multiple API calls together for complex integrations."
+            },
+            {
+              title: "Transform Node",
+              icon: Code,
+              color: "text-gray-600",
+              description: "Write JavaScript code to transform data between nodes. Access input data and return modified output.",
+              example: "Parse JSON responses, format text, calculate values, or restructure data. Use it to clean API responses before sending to AI nodes."
+            },
+            {
+              title: "Condition Node",
+              icon: GitBranch,
+              color: "text-yellow-600",
+              description: "Create branching logic in your workflow. Evaluate JavaScript conditions to determine the flow path.",
+              example: "Route different responses based on AI output, check if API calls succeeded, or implement if/else logic in your workflows."
+            },
+            {
+              title: "Save & Load",
+              icon: Save,
+              color: "text-green-600",
+              description: "Save your workflows as JSON files and load them later. Your workflows are portable and can be shared or backed up.",
+              example: "Click 'Save & Download' to export your workflow, or 'Load File' to import a previously saved workflow. Perfect for version control and sharing."
+            }
+          ];
+          
+          return (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+              <div className="bg-white rounded-lg w-full max-w-4xl max-h-[90vh] flex flex-col">
+                <div className="p-6 border-b flex items-center justify-between">
+                  <h2 className="text-2xl font-bold text-blue-600">Learn ChainLink AI Studio</h2>
+                  <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+                    <Icon icon={X} size={24} />
+                  </button>
+                </div>
+                
+                <div className="flex-1 overflow-y-auto p-6">
+                  <div className="mb-8">
+                    <h3 className="text-lg font-semibold mb-3">Getting Started</h3>
+                    <p className="text-gray-600 mb-4">
+                      ChainLink AI Studio is a visual workflow builder for creating AI-powered automations. 
+                      Connect different nodes to create powerful workflows that combine AI services, APIs, and data transformations.
+                    </p>
+                    <div className="bg-blue-50 p-4 rounded-lg">
+                      <p className="text-sm text-blue-800">
+                        <strong>Quick Start:</strong> Add AI nodes, connect them by dragging from outputs (blue) to inputs (gray), 
+                        then use the Chat button to interact with your workflow naturally!
+                      </p>
+                    </div>
+                  </div>
+                  
+                  <h3 className="text-lg font-semibold mb-4">Features</h3>
+                  <div className="space-y-6">
+                    {features.map((feature, idx) => {
+                      const IconComponent = feature.icon;
+                      return (
+                        <div key={idx} className="border rounded-lg p-4 hover:shadow-md transition-shadow">
+                          <div className="flex items-start gap-4">
+                            <div className={`p-3 rounded-lg bg-gray-50 ${feature.color}`}>
+                              <Icon icon={IconComponent} size={24} />
+                            </div>
+                            <div className="flex-1">
+                              <h4 className="font-semibold text-lg mb-2">{feature.title}</h4>
+                              <p className="text-gray-600 mb-3">{feature.description}</p>
+                              <div className="bg-gray-50 p-3 rounded">
+                                <p className="text-sm text-gray-700">
+                                  <strong>Example:</strong> {feature.example}
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  
+                  <div className="mt-8 p-4 bg-yellow-50 rounded-lg">
+                    <h4 className="font-semibold text-yellow-800 mb-2">Deployment Tips</h4>
+                    <ul className="text-sm text-yellow-700 space-y-1">
+                      <li>• Save your workflows frequently using the download button</li>
+                      <li>• To run with real APIs, host the HTML file on any web server</li>
+                      <li>• Add your API keys in the node configurations</li>
+                      <li>• Use the Chat interface to test your workflows conversationally</li>
+                      <li>• System prompts in nodes act as instructions for processing</li>
+                    </ul>
+                  </div>
+                </div>
+                
+                <div className="p-4 border-t text-center text-sm text-gray-500">
+                  Made with ❤️ by <a href="https://ElevateTempus.com" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-700">ElevateTempus.com</a>
+                </div>
+              </div>
+            </div>
+          );
+        };
+
+        function ChainLinkAIStudio() {
+          const [workflows, setWorkflows] = useState([
+            { 
+              id: 1, 
+              name: 'Sample Workflow', 
+              nodes: [], 
+              connections: [] 
+            }
+          ]);
+          const [currentWorkflow, setCurrentWorkflow] = useState(0);
+          const [nodes, setNodes] = useState([]);
+          const [connections, setConnections] = useState([]);
+          const [selectedNode, setSelectedNode] = useState(null);
+          const [editingNode, setEditingNode] = useState(null);
+          const [connectingFrom, setConnectingFrom] = useState(null);
+          const [mousePos, setMousePos] = useState(null);
+          const [executionResults, setExecutionResults] = useState(null);
+          const [isExecuting, setIsExecuting] = useState(false);
+          const [showLearn, setShowLearn] = useState(false);
+          const [showMultinodeWarning, setShowMultinodeWarning] = useState(false);
+          const [showChat, setShowChat] = useState(false);
+          const canvasRef = useRef(null);
+          
+          const workflow = workflows[currentWorkflow];
+
+          // Load saved workflows on mount
+          useEffect(() => {
+            try {
+              const saved = localStorage.getItem('chainlink-workflows');
+              if (saved) {
+                const data = JSON.parse(saved);
+                if (data.workflows && data.workflows.length > 0) {
+                  setWorkflows(data.workflows);
+                  setCurrentWorkflow(data.currentWorkflow || 0);
+                  const wf = data.workflows[data.currentWorkflow || 0];
+                  setNodes(wf.nodes || []);
+                  setConnections(wf.connections || []);
+                }
+              }
+            } catch (error) {
+              console.log('No saved workflows found');
+            }
+          }, []);
+
+          // Auto-save to localStorage
+          useEffect(() => {
+            const saveData = {
+              workflows: workflows.map((wf, idx) => 
+                idx === currentWorkflow 
+                  ? { ...wf, nodes, connections }
+                  : wf
+              ),
+              currentWorkflow
+            };
+            localStorage.setItem('chainlink-workflows', JSON.stringify(saveData));
+          }, [workflows, currentWorkflow, nodes, connections]);
+
+          // Load workflow
+          const loadWorkflow = (index) => {
+            const wf = workflows[index];
+            setCurrentWorkflow(index);
+            setNodes(wf.nodes || []);
+            setConnections(wf.connections || []);
+            setSelectedNode(null);
+            setConnectingFrom(null);
+          };
+
+          // Load workflow from file
+          const loadWorkflowFromFile = () => {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.json';
+            input.onchange = (e) => {
+              const file = e.target.files[0];
+              if (file) {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                  try {
+                    const workflowData = JSON.parse(e.target.result);
+                    if (workflowData.workflows) {
+                      setWorkflows(workflowData.workflows);
+                      setCurrentWorkflow(workflowData.currentWorkflow || 0);
+                      const wf = workflowData.workflows[workflowData.currentWorkflow || 0];
+                      setNodes(wf.nodes || []);
+                      setConnections(wf.connections || []);
+                      alert('✅ Workflow loaded successfully!');
+                    } else {
+                      alert('❌ Invalid workflow file format');
+                    }
+                  } catch (error) {
+                    alert('❌ Error reading workflow file');
+                  }
+                };
+                reader.readAsText(file);
+              }
+            };
+            input.click();
+          };
+
+          // Initialize with default workflow
+          useEffect(() => {
+            if (workflows.length > 0 && !localStorage.getItem('chainlink-workflows')) {
+              loadWorkflow(0);
+            }
+          }, []);
+
+          // Track mouse position for dragging line
+          useEffect(() => {
+            const handleMouseMove = (e) => {
+              if (connectingFrom && canvasRef.current) {
+                const rect = canvasRef.current.getBoundingClientRect();
+                setMousePos({
+                  x: e.clientX - rect.left,
+                  y: e.clientY - rect.top
+                });
+              }
+            };
+            
+            const handleMouseUp = () => {
+              if (connectingFrom) {
+                setConnectingFrom(null);
+                setMousePos(null);
+              }
+            };
+            
+            if (connectingFrom) {
+              document.addEventListener('mousemove', handleMouseMove);
+              document.addEventListener('mouseup', handleMouseUp);
+              return () => {
+                document.removeEventListener('mousemove', handleMouseMove);
+                document.removeEventListener('mouseup', handleMouseUp);
+              };
+            }
+          }, [connectingFrom]);
+
+          // Save current workflow to file
+          const saveWorkflow = () => {
+            const updated = [...workflows];
+            updated[currentWorkflow] = {
+              ...workflow,
+              nodes: nodes,
+              connections: connections
+            };
+            setWorkflows(updated);
+            
+            try {
+              const workflowData = {
+                workflows: updated,
+                currentWorkflow: currentWorkflow,
+                timestamp: new Date().toISOString()
+              };
+              
+              const dataStr = JSON.stringify(workflowData, null, 2);
+              const dataBlob = new Blob([dataStr], { type: 'application/json' });
+              const url = URL.createObjectURL(dataBlob);
+              
+              const link = document.createElement('a');
+              link.href = url;
+              link.download = `chainlink-workflow-${workflow.name.replace(/\s+/g, '-').toLowerCase()}-${Date.now()}.json`;
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+              URL.revokeObjectURL(url);
+              
+              alert('✅ Workflow saved! File downloaded to your computer.');
+            } catch (error) {
+              console.error('Save error:', error);
+              alert('❌ Error saving workflow');
+            }
+          };
+
+          // Add node to canvas
+          const addNode = (type) => {
+            const newNode = {
+              id: Date.now(),
+              type,
+              x: 100 + (nodes.length * 50) % 400,
+              y: 100 + (nodes.length * 30) % 300,
+              config: { name: `${nodeTypes.find(t => t.type === type)?.name} ${nodes.length + 1}` },
+              multinode: false
+            };
+            setNodes([...nodes, newNode]);
+          };
+
+          // Add preconfigured nodes
+          const addPreconfiguredNode = (type) => {
+            const baseConfig = {
+              id: Date.now(),
+              x: 100 + (nodes.length * 50) % 400,
+              y: 100 + (nodes.length * 30) % 300,
+              multinode: false
+            };
+
+            let newNode;
+            switch(type) {
+              case 'flowise_chat':
+                newNode = {
+                  ...baseConfig,
+                  type: 'flowise_chat',
+                  config: {
+                    name: `Flowise Chat ${nodes.length + 1}`,
+                    flowiseUrl: '',
+                    question: '',
+                    streaming: 'false',
+                    sessionId: '',
+                    apiKey: ''
+                  }
+                };
+                break;
+              case 'openai_chat':
+                newNode = {
+                  ...baseConfig,
+                  type: 'openai_chat',
+                  config: {
+                    name: `OpenAI Chat ${nodes.length + 1}`,
+                    apiKey: '',
+                    model: 'gpt-4o',
+                    systemPrompt: '',
+                    temperature: '0.7',
+                    maxTokens: '1000'
+                  }
+                };
+                break;
+              case 'claude_chat':
+                newNode = {
+                  ...baseConfig,
+                  type: 'claude_chat',
+                  config: {
+                    name: `Claude Chat ${nodes.length + 1}`,
+                    apiKey: '',
+                    model: 'claude-3-5-sonnet-20241022',
+                    systemPrompt: '',
+                    maxTokens: '1000'
+                  }
+                };
+                break;
+            }
+            
+            setNodes([...nodes, newNode]);
+          };
+
+          // Toggle multinode
+          const toggleMultinode = (nodeId) => {
+            const node = nodes.find(n => n.id === nodeId);
+            if (!node.multinode && !showMultinodeWarning) {
+              setShowMultinodeWarning(true);
+              setTimeout(() => setShowMultinodeWarning(false), 3000);
+            }
+            setNodes(nodes.map(n => n.id === nodeId ? { ...n, multinode: !n.multinode } : n));
+          };
+
+          // Delete node
+          const deleteNode = (nodeId) => {
+            setNodes(nodes.filter(n => n.id !== nodeId));
+            setConnections(connections.filter(c => c.from !== nodeId && c.to !== nodeId));
+            if (selectedNode === nodeId) setSelectedNode(null);
+          };
+
+          // Edit node
+          const editNode = (node) => {
+            setEditingNode(node);
+          };
+
+          // Save edited node
+          const saveEditedNode = (updatedNode) => {
+            setNodes(nodes.map(n => n.id === updatedNode.id ? updatedNode : n));
+            setEditingNode(null);
+          };
+
+          // Drag node
+          const dragNode = (nodeId, position) => {
+            setNodes(nodes.map(n => n.id === nodeId ? { ...n, x: position.x, y: position.y } : n));
+          };
+
+          // Start connection
+          const handleConnectStart = (nodeId, type) => {
+            if (type === 'output') {
+              setConnectingFrom(nodeId);
+            }
+          };
+
+          // End connection
+          const handleConnectEnd = (nodeId, type, hover = false) => {
+            if (connectingFrom && type === 'input' && connectingFrom !== nodeId && !hover) {
+              const fromNode = nodes.find(n => n.id === connectingFrom);
+              const toNode = nodes.find(n => n.id === nodeId);
+              
+              const exists = connections.some(c => c.from === connectingFrom && c.to === nodeId);
+              const hasExistingInput = connections.some(c => c.to === nodeId);
+              const hasExistingOutput = connections.some(c => c.from === connectingFrom);
+              
+              if (!exists) {
+                if ((!hasExistingInput || toNode.multinode) && (!hasExistingOutput || fromNode.multinode)) {
+                  const newConnection = { from: connectingFrom, to: nodeId };
+                  setConnections([...connections, newConnection]);
+                }
+              }
+              
+              setConnectingFrom(null);
+              setMousePos(null);
+            }
+          };
+
+          // Execute individual node
+          const executeNode = async (node, inputData = null) => {
+            const startTime = Date.now();
+            
+            try {
+              let output;
+              
+              switch (node.type) {
+                case 'flowise_chat':
+                case 'openai_chat':
+                case 'claude_chat':
+                case 'api_call':
+                  const apiInstructions = {
+                    flowise_chat: {
+                      method: 'POST',
+                      url: node.config.flowiseUrl || 'https://your-flowise.onrender.com/api/v1/prediction/your-id',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        ...(node.config.apiKey && { 'Authorization': `Bearer ${node.config.apiKey}` })
+                      },
+                      body: {
+                        question: inputData || node.config.question || 'Hello'
+                      }
+                    },
+                    openai_chat: {
+                      method: 'POST',
+                      url: 'https://api.openai.com/v1/chat/completions',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${node.config.apiKey || 'YOUR_OPENAI_API_KEY'}`
+                      },
+                      body: {
+                        model: node.config.customModel || node.config.model || 'gpt-4o',
+                        messages: [
+                          ...(node.config.systemPrompt ? [{ role: 'system', content: node.config.systemPrompt }] : []),
+                          { role: 'user', content: inputData || 'Hello' }
+                        ],
+                        max_tokens: parseInt(node.config.maxTokens) || 1000,
+                        temperature: parseFloat(node.config.temperature) || 0.7
+                      }
+                    },
+                    claude_chat: {
+                      method: 'POST',
+                      url: 'https://api.anthropic.com/v1/messages',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        'x-api-key': node.config.apiKey || 'YOUR_ANTHROPIC_API_KEY',
+                        'anthropic-version': '2023-06-01'
+                      },
+                      body: {
+                        model: node.config.customModel || node.config.model || 'claude-3-5-sonnet-20241022',
+                        max_tokens: parseInt(node.config.maxTokens) || 1000,
+                        ...(node.config.systemPrompt && { system: node.config.systemPrompt }),
+                        messages: [{ role: 'user', content: inputData || 'Hello' }]
+                      }
+                    },
+                    api_call: {
+                      method: node.config.method || 'GET',
+                      url: node.config.url || 'https://api.example.com/endpoint',
+                      headers: node.config.headers ? JSON.parse(node.config.headers) : {},
+                      ...(node.config.body && ['POST', 'PUT'].includes(node.config.method) && { body: node.config.body })
+                    }
+                  };
+                  
+                  const config = apiInstructions[node.type];
+                  output = `🌐 API Configuration Ready:\n\ncurl -X ${config.method} "${config.url}" \\\n${Object.entries(config.headers).map(([key, value]) => `  -H "${key}: ${value}"`).join(' \\\n')}${config.body ? ` \\\n  -d '${JSON.stringify(config.body, null, 2)}'` : ''}\n\n⚠️ Note: Canvas cannot make external API calls. Deploy locally to test with real APIs.\n\nExpected response format:\n${node.type === 'flowise_chat' ? '{"text": "AI response here"}' : 
+                    node.type === 'openai_chat' ? '{"choices": [{"message": {"content": "AI response"}}]}' :
+                    node.type === 'claude_chat' ? '{"content": [{"text": "AI response"}]}' :
+                    '{"your": "api response"}'}`;
+                  break;
+                  
+                case 'transform':
+                  if (!node.config.code) {
+                    throw new Error('JavaScript code is required');
+                  }
+                  
+                  try {
+                    const func = new Function('data', 'input', node.config.code);
+                    output = func(inputData, inputData);
+                    if (typeof output !== 'string') {
+                      output = JSON.stringify(output, null, 2);
+                    }
+                  } catch (e) {
+                    throw new Error(`Transform error: ${e.message}`);
+                  }
+                  break;
+                  
+                case 'condition':
+                  if (!node.config.condition) {
+                    throw new Error('Condition code is required');
+                  }
+                  
+                  try {
+                    const conditionFunc = new Function('data', 'input', `return ${node.config.condition}`);
+                    const result = conditionFunc(inputData, inputData);
+                    output = `Condition evaluated to: ${result}\nInput data: ${JSON.stringify(inputData)}`;
+                  } catch (e) {
+                    throw new Error(`Condition error: ${e.message}`);
+                  }
+                  break;
+                  
+                case 'loop':
+                  if (!node.config.array) {
+                    throw new Error('Array path is required');
+                  }
+                  
+                  try {
+                    const pathParts = node.config.array.split('.');
+                    let arrayData = inputData;
+                    for (const part of pathParts) {
+                      arrayData = arrayData?.[part];
+                    }
+                    
+                    if (!Array.isArray(arrayData)) {
+                      arrayData = ['item1', 'item2', 'item3'];
+                    }
+                    
+                    output = `🔄 Loop processed ${arrayData.length} items:\n${arrayData.slice(0, 5).map((item, i) => `  ${i + 1}. ${JSON.stringify(item)}`).join('\n')}${arrayData.length > 5 ? '\n  ...' : ''}\n\nFull array: ${JSON.stringify(arrayData)}`;
+                  } catch (e) {
+                    throw new Error(`Loop error: ${e.message}`);
+                  }
+                  break;
+                  
+                case 'merge':
+                  const strategy = node.config.strategy || 'concat';
+                  output = `🔀 Merge strategy: ${strategy}\nInput data: ${JSON.stringify(inputData)}\nResult: Data would be merged using ${strategy} strategy with other connected inputs`;
+                  break;
+                  
+                default:
+                  throw new Error(`Unknown node type: ${node.type}`);
+              }
+              
+              const executionTime = Date.now() - startTime;
+              
+              return {
+                nodeId: node.id,
+                nodeName: node.config.name || `Node ${node.id}`,
+                type: node.type,
+                status: 'success',
+                output: output,
+                executionTime: `${executionTime}ms`
+              };
+              
+            } catch (error) {
+              const executionTime = Date.now() - startTime;
+              
+              return {
+                nodeId: node.id,
+                nodeName: node.config.name || `Node ${node.id}`,
+                type: node.type,
+                status: 'error',
+                output: error.message,
+                executionTime: `${executionTime}ms`
+              };
+            }
+          };
+
+          // Execute workflow
+          const executeWorkflow = async () => {
+            setIsExecuting(true);
+            setExecutionResults(null);
+            
+            try {
+              const results = [];
+              const startTime = Date.now();
+              
+              for (const node of nodes) {
+                const result = await executeNode(node);
+                results.push(result);
+                
+                if (result.status === 'error') {
+                  break;
+                }
+              }
+              
+              const totalTime = Date.now() - startTime;
+              const successCount = results.filter(r => r.status === 'success').length;
+              const errorCount = results.filter(r => r.status === 'error').length;
+              
+              setExecutionResults({
+                success: errorCount === 0,
+                results: results,
+                totalTime: `${totalTime}ms`,
+                summary: `Workflow completed: ${successCount} successful, ${errorCount} failed`
+              });
+              
+            } catch (error) {
+              console.error('Execution error:', error);
+              setExecutionResults({
+                success: false,
+                error: error.message || 'Failed to execute workflow',
+                summary: "Workflow execution failed"
+              });
+            } finally {
+              setIsExecuting(false);
+            }
+          };
+
+          return (
+            <div className="flex h-screen bg-gray-50">
+              {/* Multinode Warning */}
+              {showMultinodeWarning && (
+                <div className="fixed top-4 left-1/2 transform -translate-x-1/2 bg-yellow-100 border border-yellow-400 text-yellow-800 px-4 py-2 rounded-lg shadow-lg z-50">
+                  ⚠️ Warning: Only certain use cases require multinode connections - use with caution.
+                </div>
+              )}
+              
+              {/* Learn Button */}
+              <button
+                onClick={() => setShowLearn(true)}
+                className="fixed right-4 top-1/2 transform -translate-y-1/2 bg-blue-500 text-white p-3 rounded-l-lg shadow-lg hover:bg-blue-600 transition-colors z-40"
+              >
+                <Icon icon={HelpCircle} size={20} />
+                <div className="text-xs mt-1">Learn</div>
+              </button>
+              
+              {/* Learn Modal */}
+              <LearnModal isOpen={showLearn} onClose={() => setShowLearn(false)} />
+              
+              {/* Chat Interface */}
+              {showChat && (
+                <ChatInterface 
+                  workflow={workflow}
+                  nodes={nodes}
+                  connections={connections}
+                  onClose={() => setShowChat(false)}
+                />
+              )}
+              
+              {/* Left Sidebar */}
+              <div className="w-64 bg-white border-r border-gray-200 flex flex-col">
+                <div className="p-4 border-b">
+                  <h1 className="text-xl font-bold text-blue-600">ChainLink AI Studio</h1>
+                  <p className="text-sm text-gray-600">Visual workflow automation</p>
+                  <a 
+                    href="https://ElevateTempus.com" 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="text-xs text-blue-500 hover:text-blue-700 mt-1 block"
+                  >
+                    Made by Elevate Tempus
+                  </a>
+                </div>
+                
+                {/* Quick Start Templates */}
+                <div className="p-4 border-b">
+                  <h2 className="font-semibold mb-2">Quick Start</h2>
+                  <div className="space-y-2">
+                    <button
+                      onClick={() => addPreconfiguredNode('flowise_chat')}
+                      className="w-full flex items-center gap-2 p-2 bg-purple-50 hover:bg-purple-100 rounded text-left text-sm transition-colors"
+                    >
+                      <Icon icon={MessageSquare} size={14} className="text-purple-600" />
+                      <span>Add Flowise Chat</span>
+                    </button>
+                    <button
+                      onClick={() => addPreconfiguredNode('openai_chat')}
+                      className="w-full flex items-center gap-2 p-2 bg-green-50 hover:bg-green-100 rounded text-left text-sm transition-colors"
+                    >
+                      <Icon icon={MessageSquare} size={14} className="text-green-600" />
+                      <span>Add OpenAI Chat</span>
+                    </button>
+                    <button
+                      onClick={() => addPreconfiguredNode('claude_chat')}
+                      className="w-full flex items-center gap-2 p-2 bg-orange-50 hover:bg-orange-100 rounded text-left text-sm transition-colors"
+                    >
+                      <Icon icon={MessageSquare} size={14} className="text-orange-600" />
+                      <span>Add Claude Chat</span>
+                    </button>
+                  </div>
+                </div>
+                
+                {/* Workflows */}
+                <div className="p-4 border-b">
+                  <h2 className="font-semibold mb-2">Workflows</h2>
+                  {workflows.map((wf, idx) => (
+                    <div
+                      key={wf.id}
+                      className={`p-2 rounded cursor-pointer mb-1 ${
+                        idx === currentWorkflow ? 'bg-blue-100' : 'hover:bg-gray-100'
+                      }`}
+                      onClick={() => loadWorkflow(idx)}
+                    >
+                      {wf.name}
+                    </div>
+                  ))}
+                  <button
+                    onClick={() => {
+                      const name = prompt('Workflow name:', `Workflow ${workflows.length + 1}`);
+                      if (name) {
+                        const newWorkflow = { 
+                          id: Date.now(), 
+                          name, 
+                          nodes: [], 
+                          connections: [] 
+                        };
+                        setWorkflows([...workflows, newWorkflow]);
+                        loadWorkflow(workflows.length);
+                      }
+                    }}
+                    className="w-full mt-2 p-2 border-2 border-dashed border-gray-300 rounded text-gray-500 hover:border-gray-400"
+                  >
+                    <Icon icon={Plus} size={16} className="inline mr-1" /> New Workflow
+                  </button>
+                </div>
+                
+                {/* Node Types */}
+                <div className="p-4 flex-1 overflow-y-auto">
+                  <h2 className="font-semibold mb-2">All Nodes</h2>
+                  <div className="space-y-2">
+                    {nodeTypes.map(nodeType => {
+                      const IconComponent = nodeType.icon;
+                      return (
+                        <button
+                          key={nodeType.type}
+                          onClick={() => addNode(nodeType.type)}
+                          className="w-full flex items-center gap-2 p-2 rounded hover:bg-gray-100 text-left transition-colors"
+                        >
+                          <div className={`p-1 rounded ${nodeType.color} text-white`}>
+                            <Icon icon={IconComponent} size={14} />
+                          </div>
+                          <span className="text-sm">{nodeType.name}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              {/* Main Canvas */}
+              <div className="flex-1 flex flex-col">
+                {/* Toolbar */}
+                <div className="bg-white border-b border-gray-200 p-4 flex items-center gap-2">
+                  <button
+                    onClick={() => setShowChat(true)}
+                    disabled={nodes.filter(n => ['flowise_chat', 'openai_chat', 'claude_chat'].includes(n.type)).length === 0}
+                    className="flex items-center gap-2 px-3 py-2 bg-purple-500 text-white rounded hover:bg-purple-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    <Icon icon={MessageSquare} size={16} /> Chat
+                  </button>
+                  <button
+                    onClick={saveWorkflow}
+                    className="flex items-center gap-2 px-3 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
+                  >
+                    <Icon icon={Download} size={16} /> Save & Download
+                  </button>
+                  <button
+                    onClick={loadWorkflowFromFile}
+                    className="flex items-center gap-2 px-3 py-2 bg-gray-500 text-white rounded hover:bg-gray-600 transition-colors"
+                  >
+                    <Icon icon={Upload} size={16} /> Load File
+                  </button>
+                  <button
+                    onClick={executeWorkflow}
+                    disabled={isExecuting || nodes.length === 0}
+                    className="flex items-center gap-2 px-3 py-2 bg-green-500 text-white rounded hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    <Icon icon={Play} size={16} /> {isExecuting ? 'Executing...' : 'Execute'}
+                  </button>
+                  {connectingFrom && (
+                    <div className="text-sm text-blue-600 ml-4">
+                      🔗 Drag to a gray input dot to connect...
+                    </div>
+                  )}
+                  <div className="ml-auto text-sm text-gray-500">
+                    ⚠️ Sandbox mode: Deploy locally for real API execution
+                  </div>
+                </div>
+
+                {/* Canvas and Results */}
+                <div className="flex-1 flex">
+                  {/* Canvas */}
+                  <div 
+                    ref={canvasRef}
+                    className="flex-1 relative overflow-auto bg-gray-50"
+                    style={{ 
+                      backgroundImage: 'radial-gradient(circle, #d1d5db 1px, transparent 1px)', 
+                      backgroundSize: '20px 20px' 
+                    }}
+                  >
+                    {/* Connection Lines */}
+                    {connections.map((conn, idx) => {
+                      const fromNode = nodes.find(n => n.id === conn.from);
+                      const toNode = nodes.find(n => n.id === conn.to);
+                      return (
+                        <ConnectionLine key={idx} fromNode={fromNode} toNode={toNode} />
+                      );
+                    })}
+                    
+                    {/* Dragging Line */}
+                    {connectingFrom && mousePos && (
+                      <DraggingLine 
+                        fromNode={nodes.find(n => n.id === connectingFrom)} 
+                        mousePos={mousePos} 
+                      />
+                    )}
+                    
+                    {/* Nodes */}
+                    {nodes.map(node => (
+                      <WorkflowNode
+                        key={node.id}
+                        node={node}
+                        onDelete={deleteNode}
+                        onEdit={editNode}
+                        onConnectStart={handleConnectStart}
+                        onConnectEnd={handleConnectEnd}
+                        isSelected={selectedNode === node.id}
+                        onSelect={setSelectedNode}
+                        onDrag={dragNode}
+                        onToggleMultinode={toggleMultinode}
+                      />
+                    ))}
+                    
+                    {/* Empty State */}
+                    {nodes.length === 0 && (
+                      <div className="absolute inset-0 flex items-center justify-center text-gray-500">
+                        <div className="text-center">
+                          <Icon icon={MessageSquare} size={48} className="mx-auto mb-4 opacity-30 text-blue-400" />
+                          <p className="text-lg font-medium mb-2">Welcome to ChainLink AI Studio!</p>
+                          <p className="text-sm">Use the Quick Start buttons to add your first AI chat node</p>
+                          <p className="text-sm text-gray-400 mt-2">Or drag any node from the sidebar to get started</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Results Panel */}
+                  {executionResults && (
+                    <div className="w-96 bg-white border-l border-gray-200 p-4 overflow-y-auto">
+                      <div className="flex items-center justify-between mb-4">
+                        <h2 className="font-semibold">Execution Results</h2>
+                        <button 
+                          onClick={() => setExecutionResults(null)}
+                          className="text-gray-400 hover:text-gray-600"
+                        >
+                          <Icon icon={X} size={20} />
+                        </button>
+                      </div>
+                      
+                      {executionResults.success ? (
+                        <div className="space-y-4">
+                          <div className="text-sm text-green-600 font-medium bg-green-50 p-2 rounded">
+                            ✓ {executionResults.summary}
+                          </div>
+                          
+                          {executionResults.results?.map((result, idx) => (
+                            <div key={idx} className="border rounded-lg p-3">
+                              <div className="flex items-center justify-between mb-2">
+                                <h3 className="font-medium text-sm">{result.nodeName}</h3>
+                                <span className={`text-xs px-2 py-1 rounded ${
+                                  result.status === 'success' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                                }`}>
+                                  {result.status}
+                                </span>
+                              </div>
+                              
+                              <div className="text-xs text-gray-600 mb-2">
+                                Type: {result.type} | Time: {result.executionTime}
+                              </div>
+                              
+                              <div className="text-sm bg-gray-50 p-2 rounded max-h-32 overflow-y-auto">
+                                <pre className="whitespace-pre-wrap">
+                                  {typeof result.output === 'string' ? result.output : JSON.stringify(result.output, null, 2)}
+                                </pre>
+                              </div>
+                            </div>
+                          ))}
+                          
+                          <div className="text-xs text-gray-500 border-t pt-2">
+                            Total execution time: {executionResults.totalTime}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                          <div className="font-medium mb-2 text-red-800">❌ Execution Failed</div>
+                          <div className="text-sm text-red-600">{executionResults.error || executionResults.summary}</div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Node Editor Modal */}
+              {editingNode && (
+                <NodeEditor
+                  node={editingNode}
+                  onSave={saveEditedNode}
+                  onClose={() => setEditingNode(null)}
+                />
+              )}
+            </div>
+          );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<ChainLinkAIStudio />);
+    </script>
+</body>
+</html>
